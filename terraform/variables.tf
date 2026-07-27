@@ -2,6 +2,7 @@
 # Input variables
 # Author : Sanjay Naidu (https://github.com/Sanjay-Naidu/project02-aks-platform-infra)
 # ---------------------------------------------------------------------------
+# Trigger: verifying the plan/apply pipeline end-to-end
 
 variable "prefix" {
   description = "Short prefix used to name all resources."
