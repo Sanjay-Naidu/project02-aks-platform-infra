@@ -3,9 +3,10 @@
 # Author : Sanjay Naidu (https://github.com/Sanjay-Naidu/project02-aks-platform-infra)
 #
 # Never runs automatically - only via manual "Run workflow", and only if you
-# type the confirmation text. Use this to tear down between working sessions
-# so the (heavier, multi-service) project02 stack doesn't burn free-trial
-# credit while you're not actively using it.
+# type the confirmation text. Split into plan-destroy/destroy jobs so you can
+# see exactly what will be deleted (the plan-destroy job's output) before the
+# approval gate on the destroy job is even reached - same reasoning as the
+# split in terraform.yml.
 # ---------------------------------------------------------------------------
 name: Terraform Destroy
 
@@ -34,10 +35,9 @@ env:
   WORKING_DIR: terraform
 
 jobs:
-  destroy:
-    name: Terraform Destroy
+  plan-destroy:
+    name: Terraform Plan Destroy
     runs-on: ubuntu-latest
-    environment: production
 
     defaults:
       run:
@@ -74,5 +74,55 @@ jobs:
             -backend-config="container_name=${TFSTATE_CONTAINER}" \
             -backend-config="key=${TFSTATE_KEY}"
 
+      - name: Terraform Plan (destroy)
+        run: terraform plan -destroy -input=false -no-color -out=tfplan-destroy
+
+      - name: Upload destroy plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-destroy
+          path: ${{ env.WORKING_DIR }}/tfplan-destroy
+          retention-days: 1
+
+  destroy:
+    name: Terraform Destroy
+    needs: plan-destroy
+    runs-on: ubuntu-latest
+    environment: production
+
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:        ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id:  ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${TFSTATE_RG}" \
+            -backend-config="storage_account_name=${TFSTATE_SA}" \
+            -backend-config="container_name=${TFSTATE_CONTAINER}" \
+            -backend-config="key=${TFSTATE_KEY}"
+
+      - name: Download destroy plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-destroy
+          path: ${{ env.WORKING_DIR }}
+
       - name: Terraform Destroy
-        run: terraform destroy -input=false -auto-approve
+        run: terraform apply -input=false -auto-approve tfplan-destroy

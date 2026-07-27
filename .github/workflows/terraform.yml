@@ -2,6 +2,12 @@
 # CI/CD: Terraform plan on PR, apply on merge to main
 # Author : Sanjay Naidu (https://github.com/Sanjay-Naidu/project02-aks-platform-infra)
 # Auth   : passwordless OIDC (no client secret stored in GitHub)
+#
+# Split into two jobs on purpose: GitHub's environment approval gate blocks an
+# entire job before any of its steps run, not individual steps. Keeping plan
+# and apply in one job meant the approver had to sign off *before* seeing that
+# run's own plan. Splitting them means `plan` runs unrestricted (so you can
+# review it), and only `apply` - which depends on `plan` - is gated.
 # ---------------------------------------------------------------------------
 name: Terraform AKS + ACR
 
@@ -33,10 +39,9 @@ env:
   WORKING_DIR: terraform
 
 jobs:
-  terraform:
-    name: Terraform
+  plan:
+    name: Terraform Plan
     runs-on: ubuntu-latest
-    environment: ${{ github.ref == 'refs/heads/main' && 'production' || '' }}
 
     defaults:
       run:
@@ -74,7 +79,6 @@ jobs:
         run: terraform validate
 
       - name: Terraform Plan
-        id: plan
         run: terraform plan -input=false -no-color -out=tfplan
 
       - name: Comment plan on PR
@@ -90,6 +94,54 @@ jobs:
               body
             });
 
-      - name: Terraform Apply
+      - name: Upload plan artifact
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: ${{ env.WORKING_DIR }}/tfplan
+          retention-days: 1
+
+  apply:
+    name: Terraform Apply
+    needs: plan
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: production
+
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:        ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id:  ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${TFSTATE_RG}" \
+            -backend-config="storage_account_name=${TFSTATE_SA}" \
+            -backend-config="container_name=${TFSTATE_CONTAINER}" \
+            -backend-config="key=${TFSTATE_KEY}"
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: ${{ env.WORKING_DIR }}
+
+      - name: Terraform Apply
         run: terraform apply -input=false -auto-approve tfplan
