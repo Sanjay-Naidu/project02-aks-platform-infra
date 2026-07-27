@@ -1,0 +1,78 @@
+# ---------------------------------------------------------------------------
+# Manual, approval-gated teardown of the AKS + ACR environment.
+# Author : Sanjay Naidu (https://github.com/Sanjay-Naidu/project02-aks-platform-infra)
+#
+# Never runs automatically - only via manual "Run workflow", and only if you
+# type the confirmation text. Use this to tear down between working sessions
+# so the (heavier, multi-service) project02 stack doesn't burn free-trial
+# credit while you're not actively using it.
+# ---------------------------------------------------------------------------
+name: Terraform Destroy
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "destroy" to confirm you want to tear down the AKS + ACR environment'
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  ARM_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  ARM_USE_OIDC:        "true"
+
+  TFSTATE_RG:        ${{ vars.TFSTATE_RG }}
+  TFSTATE_SA:        ${{ vars.TFSTATE_SA }}
+  TFSTATE_CONTAINER: ${{ vars.TFSTATE_CONTAINER }}
+  TFSTATE_KEY:       "infra/dev.tfstate"
+
+  WORKING_DIR: terraform
+
+jobs:
+  destroy:
+    name: Terraform Destroy
+    runs-on: ubuntu-latest
+    environment: production
+
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify confirmation input
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "destroy" ]; then
+            echo "Confirmation text did not match 'destroy'. Aborting."
+            exit 1
+          fi
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:        ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id:  ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${TFSTATE_RG}" \
+            -backend-config="storage_account_name=${TFSTATE_SA}" \
+            -backend-config="container_name=${TFSTATE_CONTAINER}" \
+            -backend-config="key=${TFSTATE_KEY}"
+
+      - name: Terraform Destroy
+        run: terraform destroy -input=false -auto-approve
